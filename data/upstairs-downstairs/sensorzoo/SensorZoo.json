@@ -1,0 +1,1 @@
+{"orientation":{"mode":"madgwick","beta":0.05,"betaMag":0.3},"stepCounter":{"mode":"adaptiveThreshold","windowSize":2,"cooldown":0.35,"minAmplitude":2},"compass":{"mode":"tiltCompensated","smoothing":0.15}}
