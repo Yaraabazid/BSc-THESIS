@@ -49,5 +49,5 @@ python visualize_sensor.py --npz [path_to_npz] --export-unity ./unity_output
 - [ ] Record in the NU building with annotation presets for walking, stairs, sitting, standing
 - [ ] Count actual steps during recording for pedometer ground truth
 - [x] Check MobilePoser source code for exact input format and coordinate conventions
-- [ ] Implement EKF / PDR on the raw `acc` / `ori` signals as the classical baseline
+- [x] Implement EKF / PDR on the raw `acc` / `ori` signals as the classical baseline
 - [ ] Compare trajectory drift: classical PDR vs MobilePoser's `tran_pred`
