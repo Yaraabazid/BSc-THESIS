@@ -343,3 +343,93 @@ def plot_trajectory_on_map(
     ax.grid(alpha=0.3)
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------
+# 6. GPS vs PDR side-by-side comparison
+# ---------------------------------------------------------------------------
+
+def plot_gps_vs_pdr(
+    trajectories: dict[str, "PDRResult"],
+    location_df,
+    *,
+    best_key: Optional[str] = None,
+    title: str = "GPS reference vs PDR estimate",
+) -> Figure:
+    """Side-by-side GPS trace and PDR trajectories in the same East/North frame.
+
+    The first GPS fix is the shared origin (0, 0).  GPS dots are sized by
+    ``horizontalAccuracy`` so fix quality is immediately visible.
+
+    Parameters
+    ----------
+    trajectories : dict
+        ``{label: PDRResult}`` — all variants to overlay on the right panel.
+    location_df : DataFrame
+        Sensor Logger ``Location.csv`` with ``latitude``, ``longitude``,
+        and optionally ``horizontalAccuracy``.
+    best_key : str, optional
+        Label of the trajectory to highlight in bold.  Defaults to the
+        first entry.
+    title : str
+        Figure suptitle.
+
+    Returns
+    -------
+    Figure
+    """
+    if location_df is None or location_df.empty:
+        raise ValueError("No GPS data.")
+
+    lat0 = float(location_df["latitude"].iloc[0])
+    lon0 = float(location_df["longitude"].iloc[0])
+    R_earth = 6_371_000.0
+    gps_n = np.radians(location_df["latitude"].to_numpy()  - lat0) * R_earth
+    gps_e = np.radians(location_df["longitude"].to_numpy() - lon0) * R_earth * np.cos(np.radians(lat0))
+    acc   = location_df["horizontalAccuracy"].to_numpy() if "horizontalAccuracy" in location_df.columns else None
+
+    if best_key is None:
+        best_key = next(iter(trajectories))
+
+    palette = ["#e67e22", "#2980b9", "#7f8c8d", "#16a085", "#c0392b"]
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+
+    # ── Left: GPS ─────────────────────────────────────────────────────────────
+    ax = axes[0]
+    ax.plot(gps_e, gps_n, color="#2980b9", linewidth=1, linestyle="--", alpha=0.4)
+    dot_s = (acc / acc.min() * 30) if acc is not None else 40
+    ax.scatter(gps_e, gps_n, c="#2980b9", s=dot_s, alpha=0.85, zorder=4)
+    ax.scatter(gps_e[0],  gps_n[0],  color="#27ae60", s=100, zorder=6, label="start")
+    ax.scatter(gps_e[-1], gps_n[-1], color="#e74c3c", s=100, marker="X", zorder=6, label="end")
+    acc_label = (f"  (accuracy {acc.min():.0f}–{acc.max():.0f} m, {len(location_df)} fixes)"
+                 if acc is not None else f"  ({len(location_df)} fixes)")
+    ax.set_title("GPS trace" + acc_label)
+    ax.set_xlabel("East (m)"); ax.set_ylabel("North (m)")
+    ax.set_aspect("equal"); ax.legend(fontsize=9); ax.grid(alpha=0.3)
+
+    # ── Right: PDR ────────────────────────────────────────────────────────────
+    ax2 = axes[1]
+    for (label, res), col in zip(trajectories.items(), palette):
+        lw    = 2.5 if label == best_key else 1.0
+        alpha = 1.0 if label == best_key else 0.4
+        ax2.plot(res.xy[:,0], res.xy[:,1], color=col, linewidth=lw,
+                 alpha=alpha, label=label.replace("\n", " "))
+    best_xy = trajectories[best_key].xy
+    ax2.scatter(0, 0, color="#27ae60", s=100, zorder=6)
+    ax2.scatter(best_xy[-1,0], best_xy[-1,1], color="#e74c3c", s=100, marker="X", zorder=6)
+    ax2.set_title(f"PDR  (bold = {best_key.replace(chr(10), ' ')})")
+    ax2.set_xlabel("East (m)"); ax2.set_ylabel("North (m)")
+    ax2.set_aspect("equal"); ax2.legend(fontsize=8); ax2.grid(alpha=0.3)
+
+    # Shared axis limits
+    all_x = np.concatenate([gps_e] + [r.xy[:,0] for r in trajectories.values()])
+    all_y = np.concatenate([gps_n] + [r.xy[:,1] for r in trajectories.values()])
+    span  = max(all_x.max()-all_x.min(), all_y.max()-all_y.min())
+    cx, cy = (all_x.max()+all_x.min())/2, (all_y.max()+all_y.min())/2
+    half  = span/2 + span*0.15 + 2
+    for ax in axes:
+        ax.set_xlim(cx-half, cx+half); ax.set_ylim(cy-half, cy+half)
+
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    return fig

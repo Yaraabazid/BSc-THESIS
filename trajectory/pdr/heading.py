@@ -190,3 +190,198 @@ class HeadingEKF:
                 self.update(compass_psi[i])
             out[i] = self.psi
         return out
+
+
+# ---------------------------------------------------------------------------
+# Quaternion-based tilt-compensated heading
+# ---------------------------------------------------------------------------
+
+def quat_to_R(q: np.ndarray) -> np.ndarray:
+    """Convert unit quaternions to rotation matrices.
+
+    Parameters
+    ----------
+    q : (N, 4) array  [qw, qx, qy, qz]
+        Unit quaternions.  Renormalise before passing if interpolated.
+
+    Returns
+    -------
+    R : (N, 3, 3) array
+        Rotation matrices such that ``v_world = R[i] @ v_phone``.
+    """
+    q = np.atleast_2d(q).astype(float)
+    qw, qx, qy, qz = q[:,0], q[:,1], q[:,2], q[:,3]
+    N = len(q)
+    R = np.zeros((N, 3, 3))
+    R[:,0,0] = 1 - 2*(qy**2 + qz**2)
+    R[:,0,1] = 2*(qx*qy - qw*qz)
+    R[:,0,2] = 2*(qx*qz + qw*qy)
+    R[:,1,0] = 2*(qx*qy + qw*qz)
+    R[:,1,1] = 1 - 2*(qx**2 + qz**2)
+    R[:,1,2] = 2*(qy*qz - qw*qx)
+    R[:,2,0] = 2*(qx*qz - qw*qy)
+    R[:,2,1] = 2*(qy*qz + qw*qx)
+    R[:,2,2] = 1 - 2*(qx**2 + qy**2)
+    return R
+
+
+def heading_from_quaternion(
+    orientation_df,
+    t_grid: np.ndarray,
+    forward_axis: np.ndarray = np.array([0., 0., -1.]),
+    lowpass_hz: float = 0.5,
+    fs: float = 60.0,
+) -> np.ndarray:
+    """Tilt-compensated heading from orientation quaternion.
+
+    Works regardless of how the phone is oriented (pocket, hand, chest).
+    Converts the quaternion to a rotation matrix, projects the phone's
+    forward axis into the world frame, and takes ``atan2(north, east)``.
+    Optionally low-pass filters to remove step-frequency oscillations.
+
+    Parameters
+    ----------
+    orientation_df : DataFrame
+        Sensor Logger ``Orientation.csv``.  Must contain
+        ``seconds_elapsed`` and quaternion columns (``qw, qx, qy, qz``
+        or ``w, x, y, z``).
+    t_grid : (N,) array
+        Common time grid (seconds_elapsed) to interpolate onto.
+    forward_axis : (3,) array
+        Phone-frame axis that points in the walking direction.
+        Default ``[0, 0, -1]`` (−Z, out of screen for a face-down phone).
+        For port-up screen-toward-leg in a right pocket, ``[1, 0, 0]``
+        (+X) is typically correct — use ``select_forward_axis`` to
+        auto-detect.
+    lowpass_hz : float
+        Low-pass cutoff for heading smoothing.  0.5 Hz removes step
+        oscillations (~1.5 Hz) while preserving turns (~0.5–1 Hz).
+        Set to 0 to skip filtering.
+    fs : float
+        Sampling rate of ``t_grid``.
+
+    Returns
+    -------
+    heading : (N,) array
+        Unwrapped heading in radians, zeroed at the first sample.
+    """
+    from scipy.signal import butter, filtfilt
+
+    # Normalise column names (Sensor Logger uses qw/qx/qy/qz or w/x/y/z).
+    df = orientation_df.copy()
+    for full, short in [("qw","w"),("qx","x"),("qy","y"),("qz","z")]:
+        if full not in df.columns and short in df.columns:
+            df = df.rename(columns={short: full})
+
+    t_ori = df["seconds_elapsed"].to_numpy()
+    q = np.stack([np.interp(t_grid, t_ori, df[c].to_numpy())
+                  for c in ("qw","qx","qy","qz")], axis=1)
+    q /= np.linalg.norm(q, axis=1, keepdims=True)
+
+    R = quat_to_R(q)
+    world_fwd = np.einsum("nij,j->ni", R, forward_axis.astype(float))
+
+    raw = np.arctan2(world_fwd[:,1], world_fwd[:,0])
+    h   = np.unwrap(raw)
+    h  -= h[0]
+
+    if lowpass_hz > 0 and len(h) > 30:
+        b, a = butter(2, lowpass_hz / (fs / 2), btype="low")
+        h = filtfilt(b, a, h)
+        h -= h[0]
+
+    return h
+
+
+def select_forward_axis(
+    orientation_df,
+    t_grid: np.ndarray,
+    fs: float = 60.0,
+    lowpass_hz: float = 0.5,
+) -> tuple[str, np.ndarray]:
+    """Auto-select the phone-frame axis that gives a ~±360° heading change.
+
+    For a recording that is a single closed loop (out-and-back or rectangle),
+    the correct forward axis will produce a total heading change close to
+    ±360°.  Tries all six principal axes and returns the best match.
+
+    Parameters
+    ----------
+    orientation_df : DataFrame
+        Sensor Logger ``Orientation.csv``.
+    t_grid : (N,) array
+        Common time grid.
+    fs : float
+        Sampling rate of ``t_grid``.
+    lowpass_hz : float
+        Passed to ``heading_from_quaternion``.
+
+    Returns
+    -------
+    name : str
+        One of ``'+X'``, ``'-X'``, ``'+Y'``, ``'-Y'``, ``'+Z'``, ``'-Z'``.
+    axis : (3,) array
+        The selected forward axis vector.
+    """
+    candidates = {
+        "+X": np.array([ 1., 0., 0.]),
+        "-X": np.array([-1., 0., 0.]),
+        "+Y": np.array([ 0., 1., 0.]),
+        "-Y": np.array([ 0.,-1., 0.]),
+        "+Z": np.array([ 0., 0., 1.]),
+        "-Z": np.array([ 0., 0.,-1.]),
+    }
+    best_name, best_vec, best_score = "+X", candidates["+X"], np.inf
+    for name, axis in candidates.items():
+        h = heading_from_quaternion(orientation_df, t_grid,
+                                     forward_axis=axis,
+                                     lowpass_hz=lowpass_hz, fs=fs)
+        total = float(h[-1])
+        score = min(abs(total - (-2*np.pi)), abs(total - 2*np.pi))
+        if score < best_score:
+            best_score, best_name, best_vec = score, name, axis
+    return best_name, best_vec
+
+
+def world_yaw_rate(
+    gyro_xyz: np.ndarray,
+    orientation_df,
+    t_grid: np.ndarray,
+) -> np.ndarray:
+    """Extract the world-vertical yaw rate from a phone in any orientation.
+
+    The raw gyro z-axis only equals the world yaw rate when the phone is
+    held flat (screen up). For any other orientation — pocket, tilted, etc.
+    — you must rotate the full gyro vector into the world frame first and
+    take the vertical (Z) component.
+
+    Parameters
+    ----------
+    gyro_xyz : (N, 3) array
+        Raw gyro in rad/s, already resampled onto ``t_grid``.
+    orientation_df : DataFrame
+        Sensor Logger ``Orientation.csv`` with quaternion columns.
+    t_grid : (N,) array
+        Common time grid (seconds_elapsed).
+
+    Returns
+    -------
+    yaw_rate : (N,) array
+        Rotation rate around the world vertical axis (rad/s).
+        Positive = counter-clockwise when viewed from above.
+    """
+    # Build rotation matrices on t_grid
+    df = orientation_df.copy()
+    for full, short in [("qw","w"),("qx","x"),("qy","y"),("qz","z")]:
+        if full not in df.columns and short in df.columns:
+            df = df.rename(columns={short: full})
+    t_ori = df["seconds_elapsed"].to_numpy()
+    q = np.stack([np.interp(t_grid, t_ori, df[c].to_numpy())
+                  for c in ("qw","qx","qy","qz")], axis=1)
+    q /= np.linalg.norm(q, axis=1, keepdims=True)
+    R = quat_to_R(q)                                   # (N, 3, 3)
+
+    # Rotate gyro vector to world frame, take Z component
+    # omega_world[i] = R[i] @ gyro_xyz[i]
+    omega_world = np.einsum("nij,nj->ni", R, gyro_xyz)  # (N, 3)
+    return omega_world[:, 2]                             # world yaw rate

@@ -118,6 +118,61 @@ def resample_to(
     return out
 
 
+
+def fix_watch_clock(watch: DeviceData, phone_t0_ns: int) -> DeviceData:
+    """Realign watch sensor timestamps to the phone epoch.
+
+    Sensor Logger derives ``seconds_elapsed`` from each device's own system
+    clock.  If the WearOS clock is not synced, the watch epoch can be days
+    behind the phone, causing ``align_phone_watch`` to raise
+    ``ValueError: Phone and watch have no time overlap``.
+
+    Fix: shift every watch DataFrame by the constant nanosecond offset
+    between the two devices' first ``time`` values.  Both recordings started
+    at the same physical moment, so this alignment is exact.
+
+    Parameters
+    ----------
+    watch : DeviceData
+        Raw watch data as returned by ``load_recording``.
+    phone_t0_ns : int
+        Epoch of the phone's first sample in nanoseconds.
+        Typically ``int(rec.phone.accel_total['time'].iloc[0])``.
+
+    Returns
+    -------
+    DeviceData
+        New DeviceData with corrected ``time`` and ``seconds_elapsed`` columns.
+    """
+    # Find the offset from whichever watch sensor is available first.
+    watch_t0_ns: Optional[int] = None
+    for attr in ("accel_total", "accel", "gyro", "orientation",
+                 "magnet", "gravity", "barometer"):
+        df = getattr(watch, attr, None)
+        if df is not None and "time" in df.columns:
+            watch_t0_ns = int(df["time"].iloc[0])
+            break
+    if watch_t0_ns is None:
+        return watch  # nothing to fix
+
+    offset_ns = phone_t0_ns - watch_t0_ns
+    if abs(offset_ns) < 1_000_000_000:   # less than 1 s — already aligned
+        return watch
+
+    fixed = DeviceData()
+    for attr in ("accel_total", "accel", "gyro", "orientation",
+                 "magnet", "gravity", "barometer", "location"):
+        df = getattr(watch, attr, None)
+        if df is None or "time" not in df.columns:
+            setattr(fixed, attr, df)
+            continue
+        df = df.copy()
+        df["time"] = df["time"] + offset_ns
+        df["seconds_elapsed"] = (df["time"] - phone_t0_ns) / 1e9
+        setattr(fixed, attr, df)
+    return fixed
+
+
 def align_phone_watch(
     phone: DeviceData,
     watch: DeviceData,

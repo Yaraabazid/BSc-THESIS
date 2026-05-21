@@ -10,18 +10,22 @@ Modules:
     viz         : Static plotting helpers (matplotlib + contextily).
 """
 from .io import Recording, load_recording
-from .preprocess import resample_to, align_phone_watch
+from .preprocess import resample_to, align_phone_watch, fix_watch_clock
 from .steps import detect_steps, weinberg_step_length
-from .heading import HeadingEKF, integrate_gyro_heading, magnetometer_heading
+from .heading import (HeadingEKF, integrate_gyro_heading, magnetometer_heading,
+                       quat_to_R, heading_from_quaternion, select_forward_axis,
+                       world_yaw_rate)
 from .pdr import compute_trajectory, PDRConfig, PDRResult
 from .altitude import pressure_to_altitude
 from . import viz
 
 __all__ = [
     "Recording", "load_recording",
-    "resample_to", "align_phone_watch",
+    "resample_to", "align_phone_watch", "fix_watch_clock",
     "detect_steps", "weinberg_step_length",
     "HeadingEKF", "integrate_gyro_heading", "magnetometer_heading",
+    "quat_to_R", "heading_from_quaternion", "select_forward_axis",
+    "world_yaw_rate",
     "compute_trajectory", "PDRConfig", "PDRResult",
     "pressure_to_altitude",
     "viz",
