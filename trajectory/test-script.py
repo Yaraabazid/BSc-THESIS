@@ -1,3 +1,20 @@
+# ARCHIVED PROTOTYPE — superseded by pdr/ package + pure_walking_pdr.ipynb
+#
+# Most logic here is replaced:
+#   - quaternion_to_yaw()     -> pdr.heading_from_quaternion() + select_forward_axis()
+#                                (the Euler yaw formula here only works phone-flat/screen-up)
+#   - load_and_resample()     -> pdr.load_recording() + fix_watch_clock() + align_phone_watch()
+#                                (no clock fix here — breaks on pure-walking recording)
+#   - align_trajectory()      -> not needed; world-frame heading makes it unnecessary
+#   - detect_steps()          -> pdr.detect_steps() (same idea, properly parameterised)
+#
+# The ONE piece worth keeping as a future reference:
+#   KF class — a 4-state position+velocity EKF that fuses PDR steps with GPS fixes.
+#   This is a position-domain filter (x, y, vx, vy), different from the 1D heading EKF
+#   in pdr/heading.py. Good starting point for the full localization EKF later.
+#
+# To run on the pure-walking recording, change DATA_DIR and add fix_watch_clock().
+
 import os
 import numpy as np
 import pandas as pd
