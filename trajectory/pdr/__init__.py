@@ -14,9 +14,11 @@ from .preprocess import resample_to, align_phone_watch, fix_watch_clock
 from .steps import detect_steps, weinberg_step_length
 from .heading import (HeadingEKF, integrate_gyro_heading, magnetometer_heading,
                        quat_to_R, heading_from_quaternion, select_forward_axis,
-                       world_yaw_rate)
+                       world_yaw_rate,
+                       complementary_filter_attitude, heading_from_accel_gyro)
 from .pdr import compute_trajectory, PDRConfig, PDRResult
 from .altitude import pressure_to_altitude
+from .pipeline import run_pipeline, PipelineResult
 from . import viz
 
 __all__ = [
@@ -26,7 +28,9 @@ __all__ = [
     "HeadingEKF", "integrate_gyro_heading", "magnetometer_heading",
     "quat_to_R", "heading_from_quaternion", "select_forward_axis",
     "world_yaw_rate",
+    "complementary_filter_attitude", "heading_from_accel_gyro",
     "compute_trajectory", "PDRConfig", "PDRResult",
     "pressure_to_altitude",
+    "run_pipeline", "PipelineResult",
     "viz",
 ]

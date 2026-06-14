@@ -385,3 +385,198 @@ def world_yaw_rate(
     # omega_world[i] = R[i] @ gyro_xyz[i]
     omega_world = np.einsum("nij,nj->ni", R, gyro_xyz)  # (N, 3)
     return omega_world[:, 2]                             # world yaw rate
+
+
+# ---------------------------------------------------------------------------
+# Accelerometer + gyroscope only heading (no magnetometer anywhere)
+# ---------------------------------------------------------------------------
+#
+# The heading sources above all ultimately depend on Android's fused
+# orientation quaternion (Orientation.csv) for the rotation matrix used to
+# project the gyro or a body axis into the world frame. That fused quaternion
+# is itself partly derived from the magnetometer, so "gyro-only" heading is
+# not actually magnetometer-free in the strict sense.
+#
+# This section implements a self-contained attitude estimator using only the
+# gyroscope (integration) and the accelerometer (gravity-direction
+# correction for roll/pitch). No magnetometer input is used anywhere. Yaw is
+# therefore driven purely by gyro integration and will drift, but roll/pitch
+# (and hence the rotation matrix used to project gyro/forward-axis into the
+# world frame) come from the device's own accelerometer rather than from
+# Android's (possibly magnetometer-tainted) sensor fusion.
+#
+# This is the classical "AHRS without magnetometer" complementary filter:
+# accelerometer correction only ever rotates the estimate about a
+# horizontal axis (it corrects the direction of gravity in the body frame),
+# so it cannot, even in principle, correct yaw -- a useful property, since
+# it means this filter's yaw is *exactly* the gyro-integrated yaw, just with
+# correct (accelerometer-derived) roll/pitch for projecting into the world
+# frame.
+
+
+def _quat_mult(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """Hamilton product of two quaternions [qw, qx, qy, qz]."""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ])
+
+
+def _quat_from_two_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Unit quaternion that rotates unit vector ``a`` onto unit vector ``b``."""
+    a = a / np.linalg.norm(a)
+    b = b / np.linalg.norm(b)
+    d = float(np.dot(a, b))
+    if d > 1 - 1e-9:
+        return np.array([1., 0., 0., 0.])
+    if d < -1 + 1e-9:
+        # 180 degree rotation: pick any axis orthogonal to a
+        axis = np.cross(a, [1., 0., 0.])
+        if np.linalg.norm(axis) < 1e-6:
+            axis = np.cross(a, [0., 1., 0.])
+        axis /= np.linalg.norm(axis)
+        return np.array([0., axis[0], axis[1], axis[2]])
+    axis = np.cross(a, b)
+    q = np.array([1 + d, axis[0], axis[1], axis[2]])
+    return q / np.linalg.norm(q)
+
+
+def complementary_filter_attitude(
+    gyro_xyz: np.ndarray,
+    accel_total_xyz: np.ndarray,
+    fs: float,
+    gain: float = 0.02,
+    gravity_lowpass_hz: float = 0.3,
+) -> np.ndarray:
+    """Estimate phone-to-world attitude from gyroscope + accelerometer only.
+
+    Predict step integrates the gyroscope (body-frame angular velocity) using
+    standard quaternion kinematics. Correct step nudges roll/pitch toward the
+    gravity direction estimated from a low-pass-filtered total acceleration
+    signal -- no magnetometer is used at any point.
+
+    Parameters
+    ----------
+    gyro_xyz : (N, 3) array
+        Gyroscope reading in rad/s, phone frame, resampled onto a uniform grid.
+    accel_total_xyz : (N, 3) array
+        Total acceleration (linear + gravity) in m/s^2, phone frame, same grid.
+    fs : float
+        Sampling rate of the grid (Hz).
+    gain : float
+        Complementary filter correction gain. Larger values trust the
+        accelerometer more (faster roll/pitch convergence, noisier under
+        dynamic acceleration); smaller values trust the gyro more.
+    gravity_lowpass_hz : float
+        Cutoff for extracting the gravity direction from total acceleration.
+        Should be well below step frequency (~1.5 Hz) so walking dynamics
+        average out, leaving the gravity DC component.
+
+    Returns
+    -------
+    q : (N, 4) array
+        Unit quaternions [qw, qx, qy, qz], phone-to-world, such that
+        ``v_world = quat_to_R(q[i]) @ v_phone``.
+    """
+    from scipy.signal import butter, filtfilt
+
+    n = len(gyro_xyz)
+    dt = 1.0 / fs
+
+    # Gravity direction estimate: low-pass the total acceleration.
+    b, a = butter(2, gravity_lowpass_hz / (fs / 2), btype="low")
+    g_phone = filtfilt(b, a, accel_total_xyz, axis=0)
+    g_hat = g_phone / np.linalg.norm(g_phone, axis=1, keepdims=True)
+
+    world_up = np.array([0., 0., 1.])
+    q = np.zeros((n, 4))
+    # Initialise attitude so that the measured gravity direction maps to
+    # world-up -- gives correct roll/pitch immediately, yaw = 0 (arbitrary).
+    q[0] = _quat_from_two_vectors(g_hat[0], world_up)
+
+    for i in range(1, n):
+        # Predict: integrate gyro (body-frame angular velocity).
+        omega_q = np.array([0., gyro_xyz[i, 0], gyro_xyz[i, 1], gyro_xyz[i, 2]])
+        dq = 0.5 * _quat_mult(q[i - 1], omega_q)
+        q_pred = q[i - 1] + dq * dt
+        q_pred /= np.linalg.norm(q_pred)
+
+        # Correct: rotate gravity-direction estimate toward world-up.
+        # This correction is orthogonal to yaw -- it only adjusts roll/pitch.
+        R_pred = quat_to_R(q_pred[None, :])[0]
+        measured_up_world = R_pred @ g_hat[i]
+        error = np.cross(measured_up_world, world_up)
+        q_corr = np.array([1., 0.5*gain*error[0], 0.5*gain*error[1], 0.5*gain*error[2]])
+        q_corr /= np.linalg.norm(q_corr)
+        q_new = _quat_mult(q_corr, q_pred)
+        q[i] = q_new / np.linalg.norm(q_new)
+
+    return q
+
+
+def heading_from_accel_gyro(
+    gyro_xyz: np.ndarray,
+    accel_total_xyz: np.ndarray,
+    fs: float,
+    forward_axis: np.ndarray = np.array([1., 0., 0.]),
+    lowpass_hz: float = 0.5,
+    gain: float = 0.02,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Tilt-compensated heading using only the gyroscope and accelerometer.
+
+    Builds a self-contained attitude estimate with
+    :func:`complementary_filter_attitude` (no magnetometer involved at all),
+    then projects ``forward_axis`` into the world frame and takes
+    ``atan2(north, east)``, exactly as :func:`heading_from_quaternion` does
+    for the Android-fused quaternion.
+
+    Parameters
+    ----------
+    gyro_xyz : (N, 3) array
+        Gyroscope in rad/s, phone frame, resampled onto a uniform grid.
+    accel_total_xyz : (N, 3) array
+        Total acceleration in m/s^2, phone frame, same grid.
+    fs : float
+        Sampling rate (Hz).
+    forward_axis : (3,) array
+        Phone-frame axis pointing in the walking direction. The same axis
+        selected for the Android-quaternion heading
+        (:func:`select_forward_axis`) applies here too, since it is a
+        property of how the phone is carried, not of which attitude
+        estimator is used.
+    lowpass_hz : float
+        Low-pass cutoff removing step-frequency heading oscillations.
+        Set to 0 to skip filtering.
+    gain : float
+        Complementary filter gain, passed to
+        :func:`complementary_filter_attitude`.
+
+    Returns
+    -------
+    heading : (N,) array
+        Unwrapped heading in radians, zeroed at the first sample.
+    q : (N, 4) array
+        The self-contained attitude quaternions, in case the rotation
+        matrices are needed elsewhere (e.g. for a matching world-frame
+        gyro rate).
+    """
+    from scipy.signal import butter, filtfilt
+
+    q = complementary_filter_attitude(gyro_xyz, accel_total_xyz, fs, gain=gain)
+    R = quat_to_R(q)
+    world_fwd = np.einsum("nij,j->ni", R, forward_axis.astype(float))
+
+    raw = np.arctan2(world_fwd[:, 1], world_fwd[:, 0])
+    h = np.unwrap(raw)
+    h -= h[0]
+
+    if lowpass_hz > 0 and len(h) > 30:
+        b, a = butter(2, lowpass_hz / (fs / 2), btype="low")
+        h = filtfilt(b, a, h)
+        h -= h[0]
+
+    return h, q

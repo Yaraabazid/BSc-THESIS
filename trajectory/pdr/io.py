@@ -106,6 +106,10 @@ def _read(folder: Path, fname: str) -> Optional[pd.DataFrame]:
     path = folder / fname
     if not path.exists():
         return None
+    if path.stat().st_size == 0:
+        # Sensor Logger writes a zero-byte file when a sensor recorded
+        # nothing (e.g. no annotations were added during this recording).
+        return None
     try:
         df = pd.read_csv(path)
         return df if not df.empty else None

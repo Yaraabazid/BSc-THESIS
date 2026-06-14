@@ -80,6 +80,7 @@ def plot_heading_sources(
     compass: Optional[np.ndarray] = None,
     fused: Optional[np.ndarray] = None,
     sensor_fusion: Optional[np.ndarray] = None,
+    accel_gyro: Optional[np.ndarray] = None,
     title: str = "Heading comparison",
     ax: Optional[Axes] = None,
 ) -> Figure:
@@ -90,10 +91,11 @@ def plot_heading_sources(
         fig = ax.figure
 
     sources = [
-        ("gyro integrated", gyro_only,        "#3498db"),
-        ("compass",         compass,          "#e67e22"),
-        ("EKF fused",       fused,            "#27ae60"),
-        ("OS / Madgwick",   sensor_fusion,    "#9b59b6"),
+        ("gyro integrated (world-frame)", gyro_only,    "#3498db"),
+        ("compass",                       compass,      "#e67e22"),
+        ("EKF (gyro + magnetometer)",     fused,        "#27ae60"),
+        ("orientation quaternion",        sensor_fusion,"#9b59b6"),
+        ("accel + gyro only (no mag.)",   accel_gyro,   "#c0392b"),
     ]
     for label, arr, color in sources:
         if arr is None:
@@ -429,6 +431,82 @@ def plot_gps_vs_pdr(
     half  = span/2 + span*0.15 + 2
     for ax in axes:
         ax.set_xlim(cx-half, cx+half); ax.set_ylim(cy-half, cy+half)
+
+    fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 7. Trajectory + altitude (for stairs recordings)
+# ---------------------------------------------------------------------------
+
+def plot_trajectory_and_altitude(
+    trajectories: dict[str, "PDRResult"],
+    seconds_elapsed: np.ndarray,
+    altitude_m: Optional[np.ndarray] = None,
+    altitude_watch_m: Optional[np.ndarray] = None,
+    *,
+    title: str = "Trajectory and altitude",
+) -> Figure:
+    """Side-by-side 2D trajectory and barometric altitude profile.
+
+    Intended for stairs recordings, where the 2D top-down trajectory alone
+    does not show the floor change. The left panel overlays every trajectory
+    in ``trajectories``; the right panel plots phone (and watch, if given)
+    relative altitude against time.
+
+    Parameters
+    ----------
+    trajectories : dict
+        ``{label: PDRResult}`` -- same as :func:`plot_trajectories`.
+    seconds_elapsed : (N,) array
+        Time grid matching ``altitude_m`` / ``altitude_watch_m``.
+    altitude_m : (N,) array, optional
+        Phone relative altitude in metres (from ``Barometer.csv``).
+    altitude_watch_m : (N,) array, optional
+        Watch relative altitude in metres, if available.
+    title : str
+        Figure suptitle.
+
+    Returns
+    -------
+    Figure
+    """
+    palette = ["#2c3e50", "#e67e22", "#16a085", "#8e44ad", "#c0392b"]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5))
+
+    for i, (label, res) in enumerate(trajectories.items()):
+        c = palette[i % len(palette)]
+        xy = res.xy
+        ax1.plot(xy[:, 0], xy[:, 1], color=c, linewidth=2,
+                 label=label, alpha=0.85)
+        ax1.scatter(xy[-1, 0], xy[-1, 1], color=c, s=50, marker="X",
+                    edgecolors="white", linewidth=1, zorder=5)
+    if trajectories:
+        first = next(iter(trajectories.values()))
+        ax1.scatter(first.xy[0, 0], first.xy[0, 1], color="#27ae60", s=80,
+                     marker="o", edgecolors="white", linewidth=1.5,
+                     zorder=6, label="start")
+    ax1.set_xlabel("East (m)")
+    ax1.set_ylabel("North (m)")
+    ax1.set_title("2D trajectory (top-down)")
+    ax1.set_aspect("equal", adjustable="box")
+    ax1.grid(alpha=0.3)
+    ax1.legend(loc="best", fontsize=8)
+
+    if altitude_m is not None:
+        ax2.plot(seconds_elapsed, altitude_m, color="#8e44ad",
+                 linewidth=1.5, label="phone (barometer)")
+    if altitude_watch_m is not None:
+        ax2.plot(seconds_elapsed, altitude_watch_m, color="#16a085",
+                 linewidth=1.2, alpha=0.8, label="watch (barometer)")
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Relative altitude (m)")
+    ax2.set_title("Barometric altitude")
+    ax2.grid(alpha=0.3)
+    if altitude_m is not None or altitude_watch_m is not None:
+        ax2.legend(loc="best", fontsize=9)
 
     fig.suptitle(title, fontsize=13)
     fig.tight_layout()
