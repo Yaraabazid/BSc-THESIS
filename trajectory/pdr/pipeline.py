@@ -47,7 +47,7 @@ from .steps import detect_steps, StepEvent
 from .heading import (
     heading_from_quaternion, select_forward_axis, world_yaw_rate,
     integrate_gyro_heading, magnetometer_heading, HeadingEKF,
-    heading_from_accel_gyro,
+    heading_from_accel_gyro, heading_from_accel_gyro_ekf,
 )
 from .pdr import compute_trajectory, PDRResult
 
@@ -186,6 +186,12 @@ def run_pipeline(
     )
     headings["accel_gyro"] = h_ag
 
+    h_ag_ekf, _ = heading_from_accel_gyro_ekf(
+        gyro_xyz, p_xyz, fs=fs, forward_axis=fwd_axis,
+        lowpass_hz=heading_lowpass_hz, gain=ag_gain,
+    )
+    headings["accel_gyro_ekf"] = h_ag_ekf
+
     yaw_rate_world = world_yaw_rate(gyro_xyz, rec.phone.orientation, t_grid)
     h_gyro = integrate_gyro_heading(yaw_rate_world, fs=fs)
     h_gyro = np.unwrap(h_gyro)
@@ -199,9 +205,9 @@ def run_pipeline(
         h_ekf = HeadingEKF(Q=ekf_Q, R=ekf_R).run(yaw_rate_world, comp, fs=fs)
         h_ekf = np.unwrap(h_ekf)
         h_ekf -= h_ekf[0]
-        headings["ekf"] = h_ekf
+        headings["ekf_mag"] = h_ekf
     else:
-        msgs.append("No magnetometer/gravity — EKF heading skipped.")
+        msgs.append("No magnetometer/gravity — magnetometer EKF heading skipped.")
 
     # --- trajectories -------------------------------------------------------------
     step_sources = {"phone": phone_steps}

@@ -15,10 +15,12 @@ from .steps import detect_steps, weinberg_step_length
 from .heading import (HeadingEKF, integrate_gyro_heading, magnetometer_heading,
                        quat_to_R, heading_from_quaternion, select_forward_axis,
                        world_yaw_rate,
-                       complementary_filter_attitude, heading_from_accel_gyro)
+                       complementary_filter_attitude, heading_from_accel_gyro,
+                       HeadingBiasEKF, heading_from_accel_gyro_ekf)
 from .pdr import compute_trajectory, PDRConfig, PDRResult
 from .altitude import pressure_to_altitude
 from .pipeline import run_pipeline, PipelineResult
+from . import mobileposer
 from . import viz
 
 __all__ = [
@@ -29,8 +31,10 @@ __all__ = [
     "quat_to_R", "heading_from_quaternion", "select_forward_axis",
     "world_yaw_rate",
     "complementary_filter_attitude", "heading_from_accel_gyro",
+    "HeadingBiasEKF", "heading_from_accel_gyro_ekf",
     "compute_trajectory", "PDRConfig", "PDRResult",
     "pressure_to_altitude",
     "run_pipeline", "PipelineResult",
+    "mobileposer",
     "viz",
 ]

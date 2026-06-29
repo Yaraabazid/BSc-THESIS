@@ -3,6 +3,9 @@ venv/
 env/
 .venv/
 
+# Mobile Poser repo
+/MobilePoser-main
+
 # Jupyter
 .ipynb_checkpoints/
 

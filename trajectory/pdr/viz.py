@@ -19,6 +19,24 @@ from .pdr import PDRResult
 
 
 # ---------------------------------------------------------------------------
+# Global style: larger, readable fonts for all figures (these are sized for
+# inclusion in a thesis where figures are often scaled down, so they need to
+# stay legible). Applied at import time; individual plots can still override.
+# ---------------------------------------------------------------------------
+plt.rcParams.update({
+    "font.size":        14,
+    "axes.titlesize":   17,
+    "axes.labelsize":   15,
+    "xtick.labelsize":  13,
+    "ytick.labelsize":  13,
+    "legend.fontsize":  12,
+    "figure.titlesize": 18,
+    "axes.titleweight": "bold",
+    "lines.linewidth":  1.8,
+})
+
+
+# ---------------------------------------------------------------------------
 # 1. Step-detection diagnostics
 # ---------------------------------------------------------------------------
 
@@ -81,31 +99,45 @@ def plot_heading_sources(
     fused: Optional[np.ndarray] = None,
     sensor_fusion: Optional[np.ndarray] = None,
     accel_gyro: Optional[np.ndarray] = None,
+    sources_dict: Optional[dict[str, np.ndarray]] = None,
     title: str = "Heading comparison",
     ax: Optional[Axes] = None,
 ) -> Figure:
-    """Overlay multiple heading time-series in degrees, unwrapped for clarity."""
+    """Overlay multiple heading time-series in degrees, unwrapped for clarity.
+
+    If ``sources_dict`` ({label: (N,) array}) is given, it takes precedence
+    and every entry is plotted with its own label -- use this to show an
+    arbitrary set of methods with explicit, filter-type-aware labels. The
+    individual keyword arguments are kept for backward compatibility.
+    """
     if ax is None:
-        fig, ax = plt.subplots(figsize=(13, 3.5))
+        fig, ax = plt.subplots(figsize=(13, 5))
     else:
         fig = ax.figure
 
-    sources = [
-        ("gyro integrated (world-frame)", gyro_only,    "#3498db"),
-        ("compass",                       compass,      "#e67e22"),
-        ("EKF (gyro + magnetometer)",     fused,        "#27ae60"),
-        ("orientation quaternion",        sensor_fusion,"#9b59b6"),
-        ("accel + gyro only (no mag.)",   accel_gyro,   "#c0392b"),
-    ]
+    palette = ["#3498db", "#c0392b", "#16a085", "#9b59b6", "#27ae60",
+               "#e67e22", "#2c3e50"]
+    if sources_dict is not None:
+        sources = [(label, arr, palette[i % len(palette)])
+                   for i, (label, arr) in enumerate(sources_dict.items())]
+    else:
+        sources = [
+            ("gyro integrated (world-frame)", gyro_only,    "#3498db"),
+            ("compass",                       compass,      "#e67e22"),
+            ("EKF (gyro + magnetometer)",     fused,        "#27ae60"),
+            ("orientation quaternion",        sensor_fusion,"#9b59b6"),
+            ("accel + gyro only (no mag.)",   accel_gyro,   "#c0392b"),
+        ]
     for label, arr, color in sources:
         if arr is None:
             continue
         ax.plot(seconds_elapsed, np.rad2deg(np.unwrap(arr)),
-                linewidth=1.0, alpha=0.85, color=color, label=label)
+                linewidth=2.0, alpha=0.9, color=color, label=label)
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Heading (deg, unwrapped)")
     ax.set_title(title)
-    ax.legend(loc="best")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18),
+              ncol=2, frameon=True, fontsize=12)
     ax.grid(alpha=0.3)
     fig.tight_layout()
     return fig
@@ -149,6 +181,7 @@ def plot_trajectories(
     results: dict[str, PDRResult],
     title: str = "PDR trajectories",
     ax: Optional[Axes] = None,
+    extra_paths: Optional[dict[str, np.ndarray]] = None,
 ) -> Figure:
     """Overlay multiple trajectories sharing a start point.
 
@@ -156,10 +189,17 @@ def plot_trajectories(
     ----------
     results : dict
         ``{label: PDRResult}``. Each trajectory is drawn in a different colour.
+    extra_paths : dict, optional
+        ``{label: (M, 2) array}`` -- additional paths that are not
+        :class:`PDRResult` (e.g. MobilePoser's horizontal translation).
+        Drawn as dashed lines, anchored at the same origin as the PDR
+        trajectories. Distance is not shown in the legend for these (no
+        per-step accounting).
     """
     palette = ["#2c3e50", "#e67e22", "#16a085", "#8e44ad", "#c0392b"]
+    extra_palette = ["#d35400", "#34495e", "#1abc9c", "#9b59b6"]
     if ax is None:
-        fig, ax = plt.subplots(figsize=(8, 8))
+        fig, ax = plt.subplots(figsize=(11, 12))
     else:
         fig = ax.figure
     for i, (label, res) in enumerate(results.items()):
@@ -170,17 +210,33 @@ def plot_trajectories(
                 alpha=0.85)
         ax.scatter(xy[-1, 0], xy[-1, 1], color=c, s=60, marker="X",
                    edgecolors="white", linewidth=1.2, zorder=5)
+    if extra_paths:
+        for i, (label, xy) in enumerate(extra_paths.items()):
+            c = extra_palette[i % len(extra_palette)]
+            dist = float(np.sum(np.linalg.norm(np.diff(xy, axis=0), axis=1)))
+            ax.plot(xy[:, 0], xy[:, 1], color=c, linewidth=2, linestyle="--",
+                    label=f"{label} ({dist:.1f} m)", alpha=0.9)
+            ax.scatter(xy[-1, 0], xy[-1, 1], color=c, s=60, marker="X",
+                       edgecolors="white", linewidth=1.2, zorder=5)
     # Common start
-    first = next(iter(results.values()))
-    ax.scatter(first.xy[0, 0], first.xy[0, 1], color="#27ae60", s=90,
+    if results:
+        first = next(iter(results.values())).xy[0]
+    else:
+        first = next(iter(extra_paths.values()))[0]
+    ax.scatter(first[0], first[1], color="#27ae60", s=90,
                marker="o", edgecolors="white", linewidth=1.5,
                zorder=6, label="start")
-    ax.set_xlabel("East (m)")
     ax.set_ylabel("North (m)")
     ax.set_title(title)
     ax.set_aspect("equal", adjustable="box")
     ax.grid(alpha=0.3)
-    ax.legend(loc="best")
+    # Place the legend well below the plot so it never covers the data or the
+    # x-axis label. The offset is generous because equal-aspect trajectory
+    # axes can be short, which would otherwise bring the legend up too high.
+    ncol = 1 if len(results) <= 3 else 2
+    ax.set_xlabel("East (m)", labelpad=8)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.28),
+              ncol=ncol, frameon=True, fontsize=11)
     fig.tight_layout()
     return fig
 
@@ -357,6 +413,7 @@ def plot_gps_vs_pdr(
     *,
     best_key: Optional[str] = None,
     title: str = "GPS reference vs PDR estimate",
+    extra_paths: Optional[dict[str, np.ndarray]] = None,
 ) -> Figure:
     """Side-by-side GPS trace and PDR trajectories in the same East/North frame.
 
@@ -375,6 +432,10 @@ def plot_gps_vs_pdr(
         first entry.
     title : str
         Figure suptitle.
+    extra_paths : dict, optional
+        ``{label: (M, 2) array}`` — additional paths without a
+        :class:`PDRResult` (e.g. MobilePoser's horizontal translation),
+        drawn as dashed lines on the right panel.
 
     Returns
     -------
@@ -394,7 +455,7 @@ def plot_gps_vs_pdr(
         best_key = next(iter(trajectories))
 
     palette = ["#e67e22", "#2980b9", "#7f8c8d", "#16a085", "#c0392b"]
-    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
 
     # ── Left: GPS ─────────────────────────────────────────────────────────────
     ax = axes[0]
@@ -416,16 +477,30 @@ def plot_gps_vs_pdr(
         alpha = 1.0 if label == best_key else 0.4
         ax2.plot(res.xy[:,0], res.xy[:,1], color=col, linewidth=lw,
                  alpha=alpha, label=label.replace("\n", " "))
+    extra_palette = ["#d35400", "#34495e", "#1abc9c", "#9b59b6"]
+    if extra_paths:
+        for i, (label, xy) in enumerate(extra_paths.items()):
+            c = extra_palette[i % len(extra_palette)]
+            ax2.plot(xy[:, 0], xy[:, 1], color=c, linewidth=1.5,
+                     linestyle="--", alpha=0.9, label=label)
     best_xy = trajectories[best_key].xy
     ax2.scatter(0, 0, color="#27ae60", s=100, zorder=6)
     ax2.scatter(best_xy[-1,0], best_xy[-1,1], color="#e74c3c", s=100, marker="X", zorder=6)
     ax2.set_title(f"PDR  (bold = {best_key.replace(chr(10), ' ')})")
     ax2.set_xlabel("East (m)"); ax2.set_ylabel("North (m)")
-    ax2.set_aspect("equal"); ax2.legend(fontsize=8); ax2.grid(alpha=0.3)
+    ax2.set_aspect("equal")
+    ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12),
+               ncol=2, fontsize=10)
+    ax2.grid(alpha=0.3)
 
     # Shared axis limits
-    all_x = np.concatenate([gps_e] + [r.xy[:,0] for r in trajectories.values()])
-    all_y = np.concatenate([gps_n] + [r.xy[:,1] for r in trajectories.values()])
+    all_x = [gps_e] + [r.xy[:,0] for r in trajectories.values()]
+    all_y = [gps_n] + [r.xy[:,1] for r in trajectories.values()]
+    if extra_paths:
+        all_x += [xy[:, 0] for xy in extra_paths.values()]
+        all_y += [xy[:, 1] for xy in extra_paths.values()]
+    all_x = np.concatenate(all_x)
+    all_y = np.concatenate(all_y)
     span  = max(all_x.max()-all_x.min(), all_y.max()-all_y.min())
     cx, cy = (all_x.max()+all_x.min())/2, (all_y.max()+all_y.min())/2
     half  = span/2 + span*0.15 + 2
@@ -448,6 +523,8 @@ def plot_trajectory_and_altitude(
     altitude_watch_m: Optional[np.ndarray] = None,
     *,
     title: str = "Trajectory and altitude",
+    extra_paths: Optional[dict[str, np.ndarray]] = None,
+    mobileposer_altitude_m: Optional[np.ndarray] = None,
 ) -> Figure:
     """Side-by-side 2D trajectory and barometric altitude profile.
 
@@ -461,20 +538,30 @@ def plot_trajectory_and_altitude(
     trajectories : dict
         ``{label: PDRResult}`` -- same as :func:`plot_trajectories`.
     seconds_elapsed : (N,) array
-        Time grid matching ``altitude_m`` / ``altitude_watch_m``.
+        Time grid matching ``altitude_m`` / ``altitude_watch_m`` /
+        ``mobileposer_altitude_m``.
     altitude_m : (N,) array, optional
         Phone relative altitude in metres (from ``Barometer.csv``).
     altitude_watch_m : (N,) array, optional
         Watch relative altitude in metres, if available.
     title : str
         Figure suptitle.
+    extra_paths : dict, optional
+        ``{label: (M, 2) array}`` -- additional horizontal paths (e.g.
+        MobilePoser's horizontal translation), drawn as dashed lines on the
+        left panel.
+    mobileposer_altitude_m : (N,) array, optional
+        MobilePoser's height (vertical translation) profile, resampled onto
+        ``seconds_elapsed`` and zeroed at the first sample -- plotted
+        alongside the barometer traces on the right panel for direct
+        comparison.
 
     Returns
     -------
     Figure
     """
     palette = ["#2c3e50", "#e67e22", "#16a085", "#8e44ad", "#c0392b"]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6.5))
 
     for i, (label, res) in enumerate(trajectories.items()):
         c = palette[i % len(palette)]
@@ -483,9 +570,22 @@ def plot_trajectory_and_altitude(
                  label=label, alpha=0.85)
         ax1.scatter(xy[-1, 0], xy[-1, 1], color=c, s=50, marker="X",
                     edgecolors="white", linewidth=1, zorder=5)
+    if extra_paths:
+        extra_palette = ["#d35400", "#34495e", "#1abc9c", "#9b59b6"]
+        for i, (label, xy) in enumerate(extra_paths.items()):
+            c = extra_palette[i % len(extra_palette)]
+            ax1.plot(xy[:, 0], xy[:, 1], color=c, linewidth=2,
+                     linestyle="--", label=label, alpha=0.9)
+            ax1.scatter(xy[-1, 0], xy[-1, 1], color=c, s=50, marker="X",
+                        edgecolors="white", linewidth=1, zorder=5)
     if trajectories:
-        first = next(iter(trajectories.values()))
-        ax1.scatter(first.xy[0, 0], first.xy[0, 1], color="#27ae60", s=80,
+        first = next(iter(trajectories.values())).xy[0]
+    elif extra_paths:
+        first = next(iter(extra_paths.values()))[0]
+    else:
+        first = None
+    if first is not None:
+        ax1.scatter(first[0], first[1], color="#27ae60", s=80,
                      marker="o", edgecolors="white", linewidth=1.5,
                      zorder=6, label="start")
     ax1.set_xlabel("East (m)")
@@ -493,7 +593,8 @@ def plot_trajectory_and_altitude(
     ax1.set_title("2D trajectory (top-down)")
     ax1.set_aspect("equal", adjustable="box")
     ax1.grid(alpha=0.3)
-    ax1.legend(loc="best", fontsize=8)
+    ax1.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12),
+               ncol=2, fontsize=10)
 
     if altitude_m is not None:
         ax2.plot(seconds_elapsed, altitude_m, color="#8e44ad",
@@ -501,13 +602,146 @@ def plot_trajectory_and_altitude(
     if altitude_watch_m is not None:
         ax2.plot(seconds_elapsed, altitude_watch_m, color="#16a085",
                  linewidth=1.2, alpha=0.8, label="watch (barometer)")
+    if mobileposer_altitude_m is not None:
+        ax2.plot(seconds_elapsed, mobileposer_altitude_m, color="#d35400",
+                 linewidth=1.5, linestyle="--", alpha=0.9, label="MobilePoser (height)")
     ax2.set_xlabel("Time (s)")
     ax2.set_ylabel("Relative altitude (m)")
-    ax2.set_title("Barometric altitude")
+    ax2.set_title("Altitude")
     ax2.grid(alpha=0.3)
-    if altitude_m is not None or altitude_watch_m is not None:
-        ax2.legend(loc="best", fontsize=9)
+    if altitude_m is not None or altitude_watch_m is not None or mobileposer_altitude_m is not None:
+        ax2.legend(loc="best", fontsize=12)
 
     fig.suptitle(title, fontsize=13)
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 8. Step timing comparison (raster plot)
+# ---------------------------------------------------------------------------
+
+def plot_step_timing_comparison(
+    step_times: dict[str, np.ndarray],
+    title: str = "Step timing comparison",
+) -> Figure:
+    """Raster-style comparison of step/contact event timestamps across sources.
+
+    Each entry in ``step_times`` is drawn as a row of vertical tick marks at
+    its event timestamps, so timing agreement (or disagreement) between
+    independent step detectors is visible at a glance -- without depending
+    on any of them sharing a coordinate frame or scale.
+
+    Parameters
+    ----------
+    step_times : dict
+        ``{label: (M,) array of seconds}`` -- e.g. watch/phone
+        accelerometer-detected step times and MobilePoser foot-contact
+        event times (see
+        :func:`pdr.mobileposer.mobileposer_foot_contact_events`).
+    title : str
+        Figure title.
+
+    Returns
+    -------
+    Figure
+    """
+    palette = ["#2c3e50", "#e67e22", "#16a085", "#8e44ad", "#c0392b"]
+    labels = list(step_times.keys())
+    fig, ax = plt.subplots(figsize=(13, 0.85 * len(labels) + 1.6))
+    for i, label in enumerate(labels):
+        times = step_times[label]
+        c = palette[i % len(palette)]
+        if len(times):
+            ax.eventplot(times, lineoffsets=i, linelengths=0.8,
+                         colors=c, linewidths=1.6)
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels([f"{l}  (n={len(step_times[l])})" for l in labels],
+                       fontsize=13)
+    ax.set_ylim(-0.6, len(labels) - 0.4)
+    ax.set_xlabel("Time (s)")
+    ax.set_title(title)
+    ax.grid(alpha=0.3, axis="x")
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 9. MobilePoser pose snapshots (skeleton stick figures)
+# ---------------------------------------------------------------------------
+
+def plot_pose_skeleton_snapshots(
+    joints: np.ndarray,
+    target_hz: float,
+    n_snapshots: int = 6,
+    parents: Optional[Sequence[int]] = None,
+    title: str = "MobilePoser pose snapshots",
+    view: str = "front",
+) -> Figure:
+    """Grid of stick-figure pose snapshots from MobilePoser's joint output.
+
+    This is a *qualitative* illustration of MobilePoser's pose estimate
+    over time -- useful even when the translation/trajectory estimate
+    isn't trustworthy, since pose accuracy and translation accuracy are
+    largely independent in this model.
+
+    Parameters
+    ----------
+    joints : (N, 24, 3) array
+        MobilePoser's ``pred_joints`` output (``step0_output['joints']``),
+        SMPL 24-joint convention, pelvis-rooted.
+    target_hz : float
+        MobilePoser's frame rate, used to label each snapshot with a
+        timestamp.
+    n_snapshots : int
+        Number of evenly-spaced frames to show.
+    parents : sequence of int, optional
+        Parent index per joint. Defaults to
+        :data:`pdr.mobileposer.SMPL_PARENTS` (the standard SMPL kinematic
+        tree) -- pass explicitly if your joints use a different ordering.
+    title : str
+        Figure suptitle.
+    view : str
+        ``"front"`` plots (X, Y): left/right vs. up/down.
+        ``"side"`` plots (Z, Y): forward/back vs. up/down.
+
+    Returns
+    -------
+    Figure
+    """
+    if parents is None:
+        from .mobileposer import SMPL_PARENTS
+        parents = SMPL_PARENTS
+
+    n = len(joints)
+    n_snapshots = min(n_snapshots, n)
+    idxs = np.linspace(0, n - 1, n_snapshots, dtype=int)
+
+    ax_pair = (0, 1) if view == "front" else (2, 1)
+    ax_labels = ("X (m)", "Y (m)") if view == "front" else ("Z (m)", "Y (m)")
+
+    fig, axes = plt.subplots(1, n_snapshots, figsize=(2.3 * n_snapshots, 3.4),
+                              sharey=True)
+    if n_snapshots == 1:
+        axes = [axes]
+
+    for ax, fi in zip(axes, idxs):
+        pts = joints[fi]  # (24, 3)
+        for j, p in enumerate(parents):
+            if p < 0:
+                continue
+            x = [pts[j, ax_pair[0]], pts[p, ax_pair[0]]]
+            y = [pts[j, ax_pair[1]], pts[p, ax_pair[1]]]
+            ax.plot(x, y, color="#2c3e50", linewidth=1.8,
+                    marker="o", markersize=2.5,
+                    markerfacecolor="#e74c3c", markeredgewidth=0)
+        ax.set_title(f"t={fi/target_hz:.1f}s", fontsize=9)
+        ax.set_xlabel(ax_labels[0], fontsize=8)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.tick_params(labelsize=7)
+        ax.grid(alpha=0.2)
+
+    axes[0].set_ylabel(ax_labels[1], fontsize=8)
+    fig.suptitle(title, fontsize=12)
     fig.tight_layout()
     return fig
